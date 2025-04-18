@@ -1,0 +1,5 @@
+apache-airflow
+kaggle
+pyspark
+dotenv
+apache-airflow-providers-postgres>=5.0.0
