@@ -1,7 +1,0 @@
-{
-    "db_connect_id": "post",
-    "minio_access": "admin",
-    "minio_secret_key": "12345678",
-    "minio_bucket": "movie-analytics",
-    "minio_user": "minio_user"
-}

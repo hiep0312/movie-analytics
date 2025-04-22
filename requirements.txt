@@ -3,3 +3,4 @@ kaggle
 pyspark
 dotenv
 apache-airflow-providers-postgres>=5.0.0
+boto3
