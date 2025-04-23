@@ -6,37 +6,17 @@ from pyspark.sql.types import (StructType, StructField as Fld, DoubleType as Dbl
                                DateType as Date, FloatType as Float)
 from pyspark.sql.functions import col
 
-def create_spark_session(minio_key, minio_secret_key):
-    spark = SparkSession.builder \
-        .appName("Spark with MinIO") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000") \
-        .config("spark.executor.heartbeatInterval", "40s") \
-        .config("spark.hadoop.fs.s3a.access.key", minio_key) \
-        .config("spark.hadoop.fs.s3a.secret.key", minio_secret_key) \
-        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .getOrCreate()
-    
-    return spark
-    
-if __name__ == "__main__":
-    minio_bucket = sys.argv[1]
-    minio_folder = sys.argv[2]
-    minio_key = sys.argv[3]
-    minio_secret_key = sys.argv[4]
-    postgres_conn_string = sys.argv[5]
-    db_user = sys.argv[6]
-    db_pass = sys.argv[7]
-
-    spark = create_spark_session(minio_key=minio_key,minio_secret_key=minio_secret_key)
-
+def load_staging_cpi(spark, params):
     cpi_schema = StructType([
         Fld("DATE", Date()),
         Fld("CUSR0000SS62031", Float())
     ])
 
+    s3_bucket = params["s3_bucket"]
+    s3_key = params["s3_key"]
+
     cpi_df = spark.read.option("header", "true") \
-                .csv("s3a://{}/{}/consumer_price_index.csv".format(minio_bucket, minio_folder), 
+                .csv(f"s3a://{s3_bucket}/{s3_key}/consumer_price_index.csv", 
                                 schema=cpi_schema)
     
     cpi_df = cpi_df.select(
@@ -47,10 +27,13 @@ if __name__ == "__main__":
     cpi_df = cpi_df.filter(cpi_df.date_cd.isNotNull())
 
     cpi_df.write \
-              .format("jdbc")  \
-              .option("url", postgres_conn_string) \
-              .option("dbtable", "movies.stage_cpi") \
-              .option("user", db_user)\
-              .option("password", db_pass) \
-              .mode("append") \
-              .save()
+        .format("jdbc") \
+        .option("url", params['postgres_url']) \
+        .option("dbtable", "movies.stage_cpi") \
+        .option("user", params['db_user']) \
+        .option("password", params['db_pass']) \
+        .option("driver", "org.postgresql.Driver") \
+        .mode("append") \
+        .save()
+
+    

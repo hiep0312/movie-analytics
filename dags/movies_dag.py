@@ -1,100 +1,160 @@
+import os
+import sys
 from datetime import datetime, timedelta
 from airflow import DAG
+from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
-from airflow.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
-from data_quality import DataQualityOperator
-from airflow.models import Variable
 
-movie_config = Variable.get("movie_config", deserialize_json=True)
-postgres_conn_id = movie_config["db_connect_id"]
+from pyspark.sql import SparkSession
 
-params = {'minio_folder': movie_config["minio_folder"],
-          'db_user': Variable.get("db_user"),
-          'db_pass': Variable.get("db_pass"),
-          'postgres_conn_string': movie_config["postgres_conn_string"],
-          'minio_bucket': movie_config["minio_bucket"],
-          'minio_secret_key': movie_config["minio_secret_key"],
-          'minio_key': movie_config["minio_key"]  
-         }
+from dotenv import load_dotenv
+from python_scripts.create_tables import create_tables
+from python_scripts.load_staging_ratings import load_staging_rating
+from python_scripts.load_staging_movies import load_staging_movies
+from python_scripts.load_staging_genre import load_staging_genre
+from python_scripts.load_staging_date import load_staging_date
+from python_scripts.load_staging_cpi import load_staging_cpi
+
+from python_scripts.upsert_cpi import upsert_cpi
+from python_scripts.upsert_date import upsert_date
+from python_scripts.upsert_genre import upsert_genre
+from python_scripts.upsert_movies import upsert_movies
+from python_scripts.upsert_ratings import upsert_ratings
+
+from python_scripts.data_quality import check_data_quality
+
+
+dag_folder = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(dag_folder, '..'))
+sys.path.insert(0, project_root)
+
+
+def print_hello(**kwargs):
+    print("Hello, Airflow!")
+
+
+load_dotenv(os.path.join(project_root, '.env'))
+
+postgres_conn_id = os.getenv("POSTGRES_ID")
+
+params = {
+    's3_bucket': os.getenv("S3_BUCKET"),
+    's3_key': os.getenv("S3_KEY"),
+    'db_user': os.getenv("DB_USER"),
+    'db_pass': os.getenv("DB_PASSWORD"),
+    'postgres_conn_string': os.getenv("POSTGRES_CONN_STRING"),
+    'aws_secret_key': os.getenv("AWS_SECRET_KEY"),
+    'aws_key': os.getenv("AWS_KEY"),
+    'postgres_url': os.getenv("POSTGRES_URL")
+}
 
 # Default settings for DAG
 default_args = {
-    'owner': 'Alan',
+    'owner': 'roy',
     'depends_on_past': False,
-    'start_date': datetime.today(),
+    'start_date': datetime(2025, 4, 22),
     'retries': 5,
     'retry_delay': timedelta(minutes=1),
 }
 
+def create_spark_session(aws_key, aws_secret_key):
+    return SparkSession \
+        .builder \
+        .config("spark.executor.heartbeatInterval", "40s") \
+        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.1,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.postgresql:postgresql:42.7.4") \
+        .config("fs.s3a.access.key", aws_key) \
+        .config("fs.s3a.secret.key", aws_secret_key) \
+        .config("fs.s3a.endpoint", "s3.amazonaws.com") \
+        .getOrCreate()
+        # .config("spark.jars", "jars/postgresql-42.7.4.jar") \
 
-with DAG(dag_id='movie_dag', default_args=default_args,
-         description='Load and transform data', schedule_interval='@once') as dag:
+spark = create_spark_session(params['aws_key'], params['aws_secret_key'])
     
-    start_operator = EmptyOperator(task_id='begin-execution', dag=dag)
+
+
+with DAG(dag_id='movilytics', default_args=default_args, description='Load and transform data', schedule_interval='@once', catchup=False) as dag:
+    start = EmptyOperator(task_id='start')
+
+    end = EmptyOperator(task_id='end')
+
 
     # create tables
-    create_tables = SQLExecuteQueryOperator(task_id='create_tables', conn_id=postgres_conn_id, sql="sql_scripts/create_tables.sql", dag=dag)
+    create_tables_task = PythonOperator(task_id='create-tables', 
+                                        python_callable=create_tables,
+                                        op_kwargs={'params': params},
+                                        dag=dag)
+   
+    load_staging_rating_task = PythonOperator(task_id='load_staging_rating',
+                                              python_callable=load_staging_rating,
+                                              op_kwargs={'spark': spark,
+                                                         'params': params})
+    
 
-    # Load stage_ratings data table
-    params['python_script'] = 'load_staging_ratings.py'
-    load_staging_ratings = BashOperator(task_id='load-staging-ratings',
-                                        bash_command= './bash_scripts/load_staging_table.sh',
-                                        params=params,
+    load_staging_movies_task = PythonOperator(task_id='load_staging_movies',
+                                              python_callable=load_staging_movies,
+                                              op_kwargs={'spark': spark,
+                                                         'params': params})
+    
+
+    load_staging_cpi_task = PythonOperator(task_id='load_staging_cpi',
+                                              python_callable=load_staging_cpi,
+                                              op_kwargs={'spark': spark,
+                                                         'params': params})
+    
+
+   
+    load_staging_date_task = PythonOperator(task_id='load_staging_date',
+                                              python_callable=load_staging_date,
+                                              op_kwargs={'spark': spark,
+                                                         'params': params})
+    
+
+   
+    load_staging_genre_task = PythonOperator(task_id='load_staging_genre',
+                                              python_callable=load_staging_genre,
+                                              op_kwargs={'spark': spark,
+                                                         'params': params})
+    
+    upsert_cpi_task = PythonOperator(task_id='upsert_cpi', 
+                                        python_callable=upsert_cpi,
+                                        op_kwargs={'params': params},
                                         dag=dag)
     
-    # # Load stage_movies data table
-    # params['python_script'] = 'load_staging_movies.py'
-    # load_staging_movies = BashOperator(task_id='load-staging-movies',
-    #                                    bash_command= './bash_scripts/load_staging_table.sh',
-    #                                    params=params,
-    #                                    dag=dag)
-
-    # # Load stage_cpi data table
-    # params['python_script'] = 'load_staging_cpi.py'
-    # load_staging_cpi = BashOperator(task_id='load-staging-cpi',
-    #                                 bash_command= './bash_scripts/load_staging_table.sh',
-    #                                 params=params,
-    #                                 dag=dag)
+    upsert_ratings_task = PythonOperator(task_id='upsert_ratings', 
+                                        python_callable=upsert_ratings,
+                                        op_kwargs={'params': params},
+                                        dag=dag)
     
-    # # Load stage_genre data table
-    # params['python_script'] = 'load_staging_genre.py'
-    # load_staging_genre = BashOperator(task_id='load-staging-genre',
-    #                                   bash_command= './bash_scripts/load_staging_table.sh',
-    #                                   params=params,
-    #                                   dag=dag)
+    upsert_movies_task = PythonOperator(task_id='upsert_movies', 
+                                        python_callable=upsert_movies,
+                                        op_kwargs={'params': params},
+                                        dag=dag)
     
-    # # Load stage_date data table
-    # params['python_script'] = 'load_staging_date.py'
-    # load_staging_date = BashOperator(task_id='load-staging-date',
-    #                                  bash_command= './bash_scripts/load_staging_table.sh',
-    #                                  params=params,
-    #                                  dag=dag)
+    upsert_date_task = PythonOperator(task_id='upsert_date', 
+                                        python_callable=upsert_date,
+                                        op_kwargs={'params': params},
+                                        dag=dag)
     
-    # upsert_ratings = SQLExecuteQueryOperator(task_id='upsert-ratings-table', conn_id=postgres_conn_id,
-    #                                 sql="sql_scripts/upsert_ratings.sql", dag=dag)
-
-    # upsert_movies = SQLExecuteQueryOperator(task_id='upsert-movies-table', conn_id=postgres_conn_id,
-    #                                  sql="sql_scripts/upsert_movies.sql", dag=dag)
-
-    # upsert_cpi = SQLExecuteQueryOperator(task_id='upsert-staging-cpi', conn_id=postgres_conn_id,
-    #                               sql='sql_scripts/upsert_cpi.sql', dag=dag)
-
-    # upsert_date = SQLExecuteQueryOperator(task_id='upsert-staging-date', conn_id=postgres_conn_id,
-    #                               sql='sql_scripts/upsert_date.sql', dag=dag)
-
-    # upsert_genre = SQLExecuteQueryOperator(task_id='upsert-staging-genre', conn_id=postgres_conn_id,
-    #                               sql='sql_scripts/upsert_genre.sql', dag=dag)
+    upsert_genre_task = PythonOperator(task_id='upsert_genre', 
+                                        python_callable=upsert_genre,
+                                        op_kwargs={'params': params},
+                                        dag=dag)
     
-    # # Check for quality issues in ingested data
-    # tables = ["movies.movies", "movies.ratings", "movies.movie_genre",
-    #           "movies.genre", "movies.date", "movies.cpi"]
-    # check_data_quality = DataQualityOperator(task_id='run_data_quality_checks',
-    #                                         postgres_conn_id=postgres_conn_id,
-    #                                         table_names=tables,
-    #                                         dag=dag)
+    table_names = ["movies.movies", "movies.ratings", "movies.movie_genre",
+              "movies.genre", "movies.date", "movies.cpi"]
+    check_data_quality_task = PythonOperator(task_id='check_data_quality',
+                                             python_callable=check_data_quality,
+                                             op_kwargs={'params': params,
+                                                        'table_names': table_names},
+                                             dag=dag)
 
-
-    start_operator >> create_tables
-    create_tables  >> load_staging_ratings
+    start >> create_tables_task
+    create_tables_task >> [load_staging_rating_task, load_staging_movies_task, load_staging_cpi_task, load_staging_date_task, load_staging_genre_task]
+    load_staging_cpi_task >> upsert_cpi_task
+    load_staging_date_task >> upsert_date_task
+    load_staging_genre_task >> upsert_genre_task
+    load_staging_movies_task >> upsert_movies_task
+    load_staging_rating_task >> upsert_ratings_task
+    [upsert_cpi_task, upsert_date_task, upsert_genre_task, upsert_movies_task, upsert_ratings_task] >> check_data_quality_task

@@ -10,34 +10,7 @@ from pyspark.sql.functions import col
 from datetime import datetime
 from pyspark.sql.functions import (col, year, month, dayofmonth, weekofyear, quarter)
 
-def create_spark_session(minio_key, minio_secret_key):
-    spark = SparkSession.builder \
-        .appName("Spark with MinIO") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000") \
-        .config("spark.executor.heartbeatInterval", "40s") \
-        .config("spark.hadoop.fs.s3a.access.key", minio_key) \
-        .config("spark.hadoop.fs.s3a.secret.key", minio_secret_key) \
-        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .getOrCreate()
-    
-    return spark
-    
-
-def format_datetime(ts):
-    return datetime.fromtimestamp(ts/1000.0) 
-
-if __name__ == "__main__":
-    minio_bucket = sys.argv[1]
-    minio_folder = sys.argv[2]
-    minio_key = sys.argv[3]
-    minio_secret_key = sys.argv[4]
-    postgres_conn_string = sys.argv[5]
-    db_user = sys.argv[6]
-    db_pass = sys.argv[7]
-
-    spark = create_spark_session(minio_key=minio_key,minio_secret_key=minio_secret_key)
-
+def load_staging_date(spark, params):
     movies_schema = StructType([
         Fld("adult", String()),
         Fld("belongs_to_collection", Long()),
@@ -65,8 +38,11 @@ if __name__ == "__main__":
         Fld("vote_count", Int())
     ])
 
+    s3_bucket = params["s3_bucket"]
+    s3_key = params["s3_key"]
+
     movies_df = spark.read.option("header", "true") \
-                           .csv("s3a://{}/{}/movies_metadata.csv".format(minio_bucket, minio_folder), 
+                           .csv(f"s3a://{s3_bucket}/{s3_key}/movies_metadata.csv", 
                                 schema=movies_schema)
     
     movies_df = movies_df.na.drop()
@@ -81,10 +57,17 @@ if __name__ == "__main__":
                  ).dropDuplicates()
     
     date_table.write \
-              .format("jdbc")  \
-              .option("url", postgres_conn_string) \
-              .option("dbtable", "movies.stage_date") \
-              .option("user", db_user)\
-              .option("password", db_pass) \
-              .mode("append") \
-              .save()
+        .format("jdbc") \
+        .option("url", params['postgres_url']) \
+        .option("dbtable", "movies.stage_date") \
+        .option("user", params['db_user']) \
+        .option("password", params['db_pass']) \
+        .option("driver", "org.postgresql.Driver") \
+        .mode("append") \
+        .save()
+
+
+def format_datetime(ts):
+    return datetime.fromtimestamp(ts/1000.0) 
+
+    

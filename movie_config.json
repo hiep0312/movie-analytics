@@ -1,9 +1,0 @@
-{
-    "db_connect_id": "post",
-    "minio_user": "admin",
-    "minio_secret_key": "12345678",
-    "minio_bucket": "movie-analytics",
-    "minio_key": "minio_user",
-    "minio_folder": "the-movies-dataset",
-    "postgres_conn_string": "jdbc:postgresql://localhost:5432/movie"
-}
