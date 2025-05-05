@@ -59,6 +59,8 @@ def load_staging_movies(spark, params):
 
     movies_df = movies_df.na.drop()
 
+    movies_df = movies_df.dropDuplicates(['movie_id'])
+
     movies_df.write \
         .format("jdbc") \
         .option("url", params['postgres_url']) \

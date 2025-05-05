@@ -5,6 +5,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 from pyspark.sql import SparkSession
@@ -24,6 +25,7 @@ from python_scripts.upsert_movies import upsert_movies
 from python_scripts.upsert_ratings import upsert_ratings
 
 from python_scripts.data_quality import check_data_quality
+from sqlalchemy import create_engine, text
 
 
 dag_folder = os.path.dirname(os.path.abspath(__file__))
@@ -71,13 +73,37 @@ def create_spark_session(aws_key, aws_secret_key):
         # .config("spark.jars", "jars/postgresql-42.7.4.jar") \
 
 spark = create_spark_session(params['aws_key'], params['aws_secret_key'])
-    
+
+def delete_tables():
+    engine = create_engine(params["postgres_conn_string"])
+
+    drop_sql = f"""
+DO
+$$
+DECLARE
+    rec RECORD;
+BEGIN
+    FOR rec IN (
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = 'movies'
+    ) LOOP
+        EXECUTE format('DROP TABLE IF EXISTS movies.%I CASCADE;', rec.tablename);
+    END LOOP;
+END;
+$$;
+    """
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text(drop_sql))
+    except Exception as e:
+        raise
+
 
 
 with DAG(dag_id='movilytics', default_args=default_args, description='Load and transform data', schedule_interval='@once', catchup=False) as dag:
     start = EmptyOperator(task_id='start')
-
-    end = EmptyOperator(task_id='end')
 
 
     # create tables

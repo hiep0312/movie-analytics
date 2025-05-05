@@ -50,20 +50,23 @@ def load_staging_genre(spark, params):
 
     movies_df = movies_df.withColumn("genres", explode(from_json("genres", genre_schema))) \
                          .withColumn("genre_id", col("genres.id")) \
-                         .withColumn("genre_name", col("genres.name")) \
+                         .withColumn("genre_name", col("genres.name"))
     
     movie_genre = movies_df.select("id", "genre_id").distinct()
     movie_genre = movie_genre.select(col("id").alias("movie_id"), col("genre_id"))
+    movie_genre = movie_genre.na.drop()
     
     genre = movies_df.select("genre_id", "genre_name").distinct()
     genre = genre.na.drop()
+    genre = genre.dropDuplicates(["genre_id"])
 
     genre.write \
             .format("jdbc")  \
             .option("url", params['postgres_url']) \
-            .option("dbtable", "movies.stage_date") \
+            .option("dbtable", "movies.stage_genre") \
             .option("user", params['db_user'])\
             .option("password", params['db_pass']) \
+            .option("driver", "org.postgresql.Driver") \
             .mode("append") \
             .save()
     
